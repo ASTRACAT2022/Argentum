@@ -7,6 +7,12 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Ensure script is run as root for systemd operations (optional but recommended)
+if [ "$EUID" -ne 0 ]; then
+    echo "WARNING: Some steps (e.g., systemd service setup) require root privileges."
+    echo "You may be prompted for sudo password."
+fi
+
 # 1. Check for Python 3 and pip
 echo "Step 1: Checking for Python 3 and pip..."
 if ! command_exists python3; then
@@ -56,12 +62,65 @@ else
 fi
 echo ".env file is configured."
 
-# 5. Make run.sh executable
-# We will create run.sh in the next step, but we can make it executable here.
-if [ -f run.sh ]; then
-    chmod +x run.sh
+# 5. Create run.sh if it doesn't exist
+RUN_SCRIPT="./run.sh"
+if [ ! -f "$RUN_SCRIPT" ]; then
+    echo "Step 5: Creating run.sh..."
+    cat > "$RUN_SCRIPT" <<EOF
+#!/bin/bash
+cd "\$(dirname "\$0")"
+source venv/bin/activate
+exec python3 bot.py
+EOF
+    chmod +x "$RUN_SCRIPT"
+    echo "run.sh created and made executable."
+else
+    chmod +x "$RUN_SCRIPT"
+    echo "run.sh already exists and is executable."
+fi
+
+# 6. Create and enable systemd service (optional, requires sudo)
+echo "Step 6: Setting up systemd service..."
+SERVICE_NAME="ai-sysadmin-bot.service"
+SERVICE_FILE="/etc/systemd/system/$SERVICE_NAME"
+
+# Get absolute path to current directory
+INSTALL_DIR="$(pwd)"
+
+cat > "/tmp/$SERVICE_NAME" <<EOF
+[Unit]
+Description=AI Sysadmin Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=$(whoami)
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/run.sh
+Restart=always
+RestartSec=10
+EnvironmentFile=$INSTALL_DIR/.env
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Copy to systemd and reload
+sudo cp "/tmp/$SERVICE_NAME" "$SERVICE_FILE"
+sudo systemctl daemon-reexec
+sudo systemctl daemon-reload
+sudo systemctl enable "$SERVICE_NAME"
+sudo systemctl start "$SERVICE_NAME"
+
+if systemctl is-active --quiet "$SERVICE_NAME"; then
+    echo "Systemd service '$SERVICE_NAME' is now active and enabled."
+else
+    echo "WARNING: Service started but may not be running properly. Check with:"
+    echo "  sudo systemctl status $SERVICE_NAME"
 fi
 
 echo "--- Installation Complete! ---"
-echo "To start the bot, you can now use the './run.sh' script."
-echo "If you need to change your API keys, you can edit the .env file."
+echo "The bot is now running as a systemd service in the background."
+echo "To view logs: sudo journalctl -u $SERVICE_NAME -f"
+echo "To stop: sudo systemctl stop $SERVICE_NAME"
+echo "To disable auto-start: sudo systemctl disable $SERVICE_NAME"
