@@ -18,9 +18,21 @@ def initialize_database():
                 CREATE TABLE IF NOT EXISTS projects (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    programmer_mode INTEGER DEFAULT 0
                 )
             """)
+
+            # Add programmer_mode column to projects table if it doesn't exist
+            try:
+                cursor.execute("ALTER TABLE projects ADD COLUMN programmer_mode INTEGER DEFAULT 0")
+                conn.commit()
+                logger.info("Column 'programmer_mode' added to 'projects' table.")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" in str(e):
+                    pass  # Column already exists
+                else:
+                    raise
             # Task table: Stores individual tasks within a project, including their history
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
@@ -65,12 +77,41 @@ def list_projects() -> List[Dict[str, Any]]:
         with sqlite3.connect(DB_FILE) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT id, name, created_at FROM projects ORDER BY created_at DESC")
+            cursor.execute("SELECT id, name, created_at, programmer_mode FROM projects ORDER BY created_at DESC")
             projects = [dict(row) for row in cursor.fetchall()]
             return projects
     except sqlite3.Error as e:
         logger.error(f"Failed to list projects: {e}")
         return []
+
+def set_programmer_mode(project_id: int, enabled: bool):
+    """Enables or disables programmer mode for a project."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE projects SET programmer_mode = ? WHERE id = ?",
+                (1 if enabled else 0, project_id)
+            )
+            conn.commit()
+            logger.info(f"Programmer mode for project {project_id} set to {enabled}.")
+    except sqlite3.Error as e:
+        logger.error(f"Failed to set programmer mode for project {project_id}: {e}")
+
+
+def is_programmer_mode_enabled(project_id: int) -> bool:
+    """Checks if programmer mode is enabled for a project."""
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT programmer_mode FROM projects WHERE id = ?", (project_id,))
+            result = cursor.fetchone()
+            if result:
+                return bool(result[0])
+            return False
+    except sqlite3.Error as e:
+        logger.error(f"Failed to check programmer mode for project {project_id}: {e}")
+        return False
 
 # --- Task Management ---
 

@@ -1,85 +1,147 @@
 import subprocess
 import logging
+import os
+from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
-def execute_commands(commands: list[str]) -> list[dict]:
+def _execute_shell(command: str) -> Dict[str, Any]:
+    """Executes a single shell command."""
+    logger.info(f"Executing shell command: {command}")
+    try:
+        process = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        return {
+            "command": command,
+            "stdout": process.stdout.strip(),
+            "stderr": process.stderr.strip(),
+            "returncode": process.returncode,
+        }
+    except Exception as e:
+        logger.error(f"Failed to execute command '{command}': {e}")
+        return {"command": command, "stdout": "", "stderr": str(e), "returncode": -1}
+
+def _read_file(path: str) -> Dict[str, Any]:
+    """Reads the content of a file."""
+    logger.info(f"Reading file: {path}")
+    try:
+        with open(path, 'r') as f:
+            content = f.read()
+        return {"command": f"READ_FILE {path}", "stdout": content, "stderr": "", "returncode": 0}
+    except Exception as e:
+        logger.error(f"Failed to read file '{path}': {e}")
+        return {"command": f"READ_FILE {path}", "stdout": "", "stderr": str(e), "returncode": 1}
+
+def _write_file(path: str, content: str) -> Dict[str, Any]:
+    """Writes content to a file."""
+    logger.info(f"Writing to file: {path}")
+    try:
+        dir_name = os.path.dirname(path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+        with open(path, 'w') as f:
+            f.write(content)
+        return {"command": f"WRITE_FILE {path}", "stdout": f"File '{path}' written successfully.", "stderr": "", "returncode": 0}
+    except Exception as e:
+        logger.error(f"Failed to write to file '{path}': {e}")
+        return {"command": f"WRITE_FILE {path}", "stdout": "", "stderr": str(e), "returncode": 1}
+
+def _list_files(path: str) -> Dict[str, Any]:
+    """Lists files in a directory."""
+    logger.info(f"Listing files in: {path}")
+    try:
+        files = os.listdir(path)
+        return {"command": f"LIST_FILES {path}", "stdout": "\n".join(files), "stderr": "", "returncode": 0}
+    except Exception as e:
+        logger.error(f"Failed to list files in '{path}': {e}")
+        return {"command": f"LIST_FILES {path}", "stdout": "", "stderr": str(e), "returncode": 1}
+
+
+def execute_command(full_command: str) -> Dict[str, Any]:
     """
-    Executes a list of shell commands and captures their output.
+    Parses and executes a command, which can be a shell command or a special command.
+    """
+    if not full_command.strip():
+        return {"stdout": "", "stderr": "Empty command.", "returncode": 1}
 
-    Args:
-        commands: A list of shell commands to execute.
+    parts = full_command.split(maxsplit=1)
+    command_type = parts[0].upper()
+    args = parts[1] if len(parts) > 1 else ""
 
-    Returns:
-        A list of dictionaries, where each dictionary contains the
-        command, its stdout, stderr, and return code.
+    if command_type == "SHELL":
+        return _execute_shell(args)
+    elif command_type == "READ_FILE":
+        return _read_file(args)
+    elif command_type == "WRITE_FILE":
+        try:
+            path, content = args.split('\n', 1)
+            path = path.strip()
+            # Strip the <<CONTENT and CONTENT markers
+            if content.startswith("<<CONTENT\n"):
+                content = content[len("<<CONTENT\n"):]
+            if content.endswith("\nCONTENT"):
+                content = content[:-len("\nCONTENT")]
+            return _write_file(path, content)
+        except ValueError:
+            return {"command": f"WRITE_FILE {args}", "stdout": "", "stderr": "Invalid WRITE_FILE format. Missing path or content.", "returncode": 1}
+    elif command_type == "LIST_FILES":
+        return _list_files(args if args else ".")
+    else:
+        # Default to executing as a shell command for backward compatibility
+        return _execute_shell(full_command)
+
+def execute_commands(commands: List[str]) -> List[Dict[str, Any]]:
+    """
+    Executes a list of commands. This is kept for the standard (non-programmer) mode.
     """
     results = []
     for command in commands:
-        if not command.strip():
-            continue
-
-        logger.info(f"Executing command: {command}")
-        try:
-            # We use shell=True to interpret the command as a full shell command.
-            # This is necessary for commands with pipes or other shell features.
-            # It's important that we only run commands that have been approved by the user.
-            process = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                check=False  # We set check=False to handle non-zero exit codes manually
-            )
-            result = {
-                "command": command,
-                "stdout": process.stdout.strip(),
-                "stderr": process.stderr.strip(),
-                "returncode": process.returncode,
-            }
-            logger.info(f"Command executed with return code {process.returncode}")
-        except Exception as e:
-            logger.error(f"Failed to execute command '{command}': {e}")
-            result = {
-                "command": command,
-                "stdout": "",
-                "stderr": str(e),
-                "returncode": -1,
-            }
-        results.append(result)
+        results.append(execute_command(command))
     return results
 
 if __name__ == '__main__':
-    # Test the executor with some sample commands
     logging.basicConfig(level=logging.INFO)
+    print("--- Testing Command Executor ---")
 
-    # Test 1: A simple successful command
-    print("--- Test 1: Successful command ---")
-    test_commands_1 = ["echo 'Hello, World!'", "ls -l"]
-    outputs_1 = execute_commands(test_commands_1)
-    for out in outputs_1:
-        print(f"Command: {out['command']}")
-        print(f"Return Code: {out['returncode']}")
-        print(f"Stdout: {out['stdout']}")
-        print(f"Stderr: {out['stderr']}\n")
+    # Test 1: SHELL command
+    print("\n--- Test 1: SHELL command ---")
+    res1 = execute_command("SHELL echo 'Hello from shell'")
+    print(res1)
 
-    # Test 2: A command that produces an error
-    print("--- Test 2: Command with an error ---")
-    test_commands_2 = ["ls non_existent_directory"]
-    outputs_2 = execute_commands(test_commands_2)
-    for out in outputs_2:
-        print(f"Command: {out['command']}")
-        print(f"Return Code: {out['returncode']}")
-        print(f"Stdout: {out['stdout']}")
-        print(f"Stderr: {out['stderr']}\n")
+    # Test 2: READ_FILE command (create a file first)
+    print("\n--- Test 2: READ_FILE command ---")
+    with open("test_read.txt", "w") as f:
+        f.write("Hello from test file")
+    res2 = execute_command("READ_FILE test_read.txt")
+    print(res2)
+    os.remove("test_read.txt")
 
-    # Test 3: A command that might require sudo (will fail without it)
-    # This demonstrates how the executor captures permission errors.
-    print("--- Test 3: Command requiring privileges ---")
-    test_commands_3 = ["apt-get update"] # This will likely fail without sudo
-    outputs_3 = execute_commands(test_commands_3)
-    for out in outputs_3:
-        print(f"Command: {out['command']}")
-        print(f"Return Code: {out['returncode']}")
-        print(f"Stdout: {out['stdout']}")
-        print(f"Stderr: {out['stderr']}\n")
+    # Test 3: WRITE_FILE command
+    print("\n--- Test 3: WRITE_FILE command ---")
+    write_cmd = """WRITE_FILE test_write.txt
+<<CONTENT
+This is a test write.
+CONTENT"""
+    res3 = execute_command(write_cmd)
+    print(res3)
+    if res3["returncode"] == 0:
+        with open("test_write.txt", "r") as f:
+            print(f"Content of test_write.txt: {f.read()}")
+        os.remove("test_write.txt")
+
+    # Test 4: LIST_FILES command
+    print("\n--- Test 4: LIST_FILES command ---")
+    res4 = execute_command("LIST_FILES .")
+    print(res4)
+
+    # Test 5: Legacy command (no type specified)
+    print("\n--- Test 5: Legacy command ---")
+    res5 = execute_command("echo 'Legacy hello'")
+    print(res5)
+
+    print("\n--- Command Executor Tests Complete ---")
