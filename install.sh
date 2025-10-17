@@ -65,3 +65,30 @@ fi
 echo "--- Installation Complete! ---"
 echo "To start the bot, you can now use the './run.sh' script."
 echo "If you need to change your API keys, you can edit the .env file."
+
+# 6. Install systemd service
+read -p "Do you want to install the systemd service to run the bot in the background? (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    echo "Step 6: Installing systemd service..."
+    if [ -f argentum.service ]; then
+        # Replace placeholders with actual values
+        USER_VAR=$(whoami)
+        CWD_VAR=$(pwd)
+
+        # Create a temporary service file with replaced values
+        sed -e "s|{{USER}}|$USER_VAR|g" -e "s|{{CWD}}|$CWD_VAR|g" argentum.service > argentum.tmp.service
+
+        # Use sudo to install the service
+        echo "The script needs sudo privileges to install the systemd service."
+        sudo mv argentum.tmp.service /etc/systemd/system/argentum.service
+        sudo systemctl daemon-reload
+        sudo systemctl enable argentum.service
+        sudo systemctl start argentum.service
+
+        echo "Service 'argentum' has been installed and started."
+        echo "You can check its status with: sudo systemctl status argentum"
+    else
+        echo "WARNING: argentum.service file not found. Skipping systemd installation."
+    fi
+fi
