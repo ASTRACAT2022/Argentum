@@ -98,6 +98,7 @@ class GeminiClient:
 
         **Instructions:**
         - Think step-by-step.
+        - **Error Handling:** Pay close attention to the command output. A `returncode` other than 0, or any output in `stderr`, indicates an error. If a command fails, analyze the error and try to fix it. For example, if a package fails to install, you might need to update package lists first. If a file is not found, you might need to create it or check the path.
         - Only output the *next single command* to be executed. Do not provide explanations or comments.
         - If you need to write a file, make sure the content is correct and complete.
 
