@@ -1,3 +1,5 @@
-google-generativeai
-python-telegram-bot
 python-dotenv
+python-telegram-bot
+google-generativeai
+paramiko
+cryptography

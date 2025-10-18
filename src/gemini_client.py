@@ -52,6 +52,8 @@ class GeminiClient:
         The user is running as the root user, so you do not need to use 'sudo'.
         Provide only the shell commands, one per line, without any additional explanations, comments, or formatting like ```bash.
 
+        If the user asks a question about the server's status, provide the necessary commands to answer it. For example, to check CPU usage, you could use `top -bn1 | grep "Cpu(s)"`. To check memory, use `free -h`. For disk space, use `df -h`.
+
         {history_context}
         Current user request: "{task_description}"
 
@@ -71,6 +73,8 @@ class GeminiClient:
         return f"""
         You are an autonomous AI programmer and system administrator. Your goal is to complete the user's task by executing a sequence of commands.
         You operate in a loop: you issue a command, observe the output, and then decide on the next command.
+
+        **Important:** You may be working on a local machine or a remote server via SSH. Be mindful of this when formulating commands.
 
         **Available Commands:**
         1. `SHELL <command>`: Executes a shell command on the Linux server (as root).
