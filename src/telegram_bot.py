@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv(dotenv_path='src/.env')
 
 # Load credentials from environment variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -123,6 +123,72 @@ async def select_project(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Неверный формат ID. Укажите число.")
 
 
+async def add_ssh_credential_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Adds a new SSH credential."""
+    args = context.args
+    if len(args) != 4:
+        await update.message.reply_text(
+            "Usage: /add_ssh <name> <host> <port> <username>\n\nPlease attach the private key file."
+        )
+        return
+
+    if not update.message.document:
+        await update.message.reply_text("Please attach the private key file.")
+        return
+
+    name, host, port_str, username = args
+    try:
+        port = int(port_str)
+    except ValueError:
+        await update.message.reply_text("Port must be a number.")
+        return
+
+    try:
+        key_file = await context.bot.get_file(update.message.document.file_id)
+        key_content = await key_file.download_as_bytearray()
+        key = key_content.decode()
+
+        cred_id = db.add_ssh_credential(name, host, port, username, key)
+        if cred_id:
+            await update.message.reply_text(f"SSH credential '{name}' added with ID {cred_id}.")
+        else:
+            await update.message.reply_text(f"Failed to add SSH credential '{name}'. It might already exist.")
+    except Exception as e:
+        logger.error(f"Failed to process SSH key file: {e}")
+        await update.message.reply_text(f"An error occurred while processing the key file: {e}")
+
+async def list_ssh_credentials_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Lists all SSH credentials."""
+    credentials = db.list_ssh_credentials()
+    if not credentials:
+        await update.message.reply_text("No SSH credentials found. Use /add_ssh to add one.")
+        return
+
+    message = "Available SSH credentials:\n"
+    for cred in credentials:
+        message += f"- ID: {cred['id']}, Name: {cred['name']}, Host: {cred['host']}:{cred['port']}, User: {cred['username']}\n"
+    await update.message.reply_text(message)
+
+
+async def select_ssh_credential_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Selects an SSH credential for the current project."""
+    project_id = context.user_data.get('selected_project_id')
+    if not project_id:
+        await update.message.reply_text("Please select a project first.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /select_ssh <credential_id>")
+        return
+
+    try:
+        credential_id = int(context.args[0])
+        db.set_project_remote_server(project_id, credential_id)
+        await update.message.reply_text(f"SSH credential {credential_id} selected for the current project.")
+    except (ValueError, IndexError):
+        await update.message.reply_text("Invalid credential ID.")
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles user tasks based on the selected project and its mode."""
     project_id = context.user_data.get('selected_project_id')
@@ -176,6 +242,11 @@ async def run_programmer_mode_session(project_id: int, task_description: str, up
     history = db.get_project_history(project_id)
     task_id = db.create_task(project_id, task_description, "Autonomous session")
 
+    ssh_creds = None
+    project = next((p for p in db.list_projects() if p['id'] == project_id), None)
+    if project and project.get('remote_server_id'):
+        ssh_creds = db.get_ssh_credential(project['remote_server_id'])
+
     last_command_output = None
     full_log = []
     max_steps = 20 # Safety break
@@ -193,7 +264,7 @@ async def run_programmer_mode_session(project_id: int, task_description: str, up
             return
 
         await update.message.reply_text(f"Выполняю команду:\n```\n{command_to_execute}\n```", parse_mode='MarkdownV2')
-        result = execute_command(command_to_execute)
+        result = execute_command(command_to_execute, ssh_creds)
 
         # Format output for the next AI prompt and for the user
         last_command_output = (
@@ -242,7 +313,14 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 
     await query.edit_message_text(text="План принят. Выполняю команды...")
 
-    results = execute_commands(commands)
+    project_id = db.get_project_id_from_task(task_id)
+    ssh_creds = None
+    if project_id:
+        project = next((p for p in db.list_projects() if p['id'] == project_id), None)
+        if project and project.get('remote_server_id'):
+            ssh_creds = db.get_ssh_credential(project['remote_server_id'])
+
+    results = execute_commands(commands, ssh_creds)
     log_json = json.dumps(results, indent=2)
 
     # Save execution log to the database
@@ -290,6 +368,9 @@ def main() -> None:
     application.add_handler(CommandHandler("list_projects", list_projects))
     application.add_handler(CommandHandler("select_project", select_project))
     application.add_handler(CommandHandler("programmer_mode", programmer_mode))
+    application.add_handler(CommandHandler("add_ssh", add_ssh_credential_handler))
+    application.add_handler(CommandHandler("list_ssh", list_ssh_credentials_handler))
+    application.add_handler(CommandHandler("select_ssh", select_ssh_credential_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(button_callback_handler, pattern="^(confirm|cancel)_"))
 

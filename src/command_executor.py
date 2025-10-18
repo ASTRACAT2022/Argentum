@@ -2,6 +2,7 @@ import subprocess
 import logging
 import os
 from typing import Dict, Any, List
+import paramiko
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,8 @@ def _execute_shell(command: str) -> Dict[str, Any]:
             shell=True,
             capture_output=True,
             text=True,
-            check=False
+            check=False,
+            timeout=180  # 3-minute timeout
         )
         return {
             "command": command,
@@ -22,6 +24,9 @@ def _execute_shell(command: str) -> Dict[str, Any]:
             "stderr": process.stderr.strip(),
             "returncode": process.returncode,
         }
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Command '{command}' timed out.")
+        return {"command": command, "stdout": "", "stderr": "Command timed out after 3 minutes.", "returncode": -1}
     except Exception as e:
         logger.error(f"Failed to execute command '{command}': {e}")
         return {"command": command, "stdout": "", "stderr": str(e), "returncode": -1}
@@ -62,9 +67,48 @@ def _list_files(path: str) -> Dict[str, Any]:
         return {"command": f"LIST_FILES {path}", "stdout": "", "stderr": str(e), "returncode": 1}
 
 
-def execute_command(full_command: str) -> Dict[str, Any]:
+def _execute_ssh(command: str, creds: Dict[str, Any]) -> Dict[str, Any]:
+    """Executes a single shell command on a remote server."""
+    logger.info(f"Executing SSH command: {command} on {creds['host']}")
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        from io import StringIO
+        key_file = StringIO(creds['key'])
+        pkey = paramiko.RSAKey.from_private_key(key_file)
+
+        client.connect(
+            hostname=creds['host'],
+            port=creds['port'],
+            username=creds['username'],
+            pkey=pkey,
+            timeout=180
+        )
+
+        stdin, stdout, stderr = client.exec_command(command, timeout=180)
+
+        stdout_str = stdout.read().decode('utf-8').strip()
+        stderr_str = stderr.read().decode('utf-8').strip()
+        returncode = stdout.channel.recv_exit_status()
+
+        client.close()
+
+        return {
+            "command": command,
+            "stdout": stdout_str,
+            "stderr": stderr_str,
+            "returncode": returncode,
+        }
+    except Exception as e:
+        logger.error(f"Failed to execute SSH command '{command}': {e}")
+        return {"command": command, "stdout": "", "stderr": str(e), "returncode": -1}
+
+
+def execute_command(full_command: str, ssh_creds: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Parses and executes a command, which can be a shell command or a special command.
+    If ssh_creds are provided, it will execute the command on the remote server.
     """
     if not full_command.strip():
         return {"stdout": "", "stderr": "Empty command.", "returncode": 1}
@@ -74,10 +118,47 @@ def execute_command(full_command: str) -> Dict[str, Any]:
     args = parts[1] if len(parts) > 1 else ""
 
     if command_type == "SHELL":
+        if ssh_creds:
+            return _execute_ssh(args, ssh_creds)
         return _execute_shell(args)
     elif command_type == "READ_FILE":
+        if ssh_creds:
+            return _execute_ssh(f"cat {args}", ssh_creds)
         return _read_file(args)
     elif command_type == "WRITE_FILE":
+        if ssh_creds:
+            path, content = args.split('\n', 1)
+            path = path.strip()
+            # Strip the <<CONTENT and CONTENT markers
+            if content.startswith("<<CONTENT\n"):
+                content = content[len("<<CONTENT\n"):]
+            if content.endswith("\nCONTENT"):
+                content = content[:-len("\nCONTENT")]
+            # Use SFTP to write the file over SSH
+            try:
+                client = paramiko.SSHClient()
+                client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+                from io import StringIO
+                key_file = StringIO(ssh_creds['key'])
+                pkey = paramiko.RSAKey.from_private_key(key_file)
+
+                client.connect(
+                    hostname=ssh_creds['host'],
+                    port=ssh_creds['port'],
+                    username=ssh_creds['username'],
+                    pkey=pkey,
+                    timeout=180
+                )
+                sftp = client.open_sftp()
+                with sftp.open(path, 'w') as f:
+                    f.write(content)
+                sftp.close()
+                client.close()
+                return {"command": f"WRITE_FILE {path}", "stdout": f"File '{path}' written successfully.", "stderr": "", "returncode": 0}
+            except Exception as e:
+                logger.error(f"Failed to write file over SSH '{path}': {e}")
+                return {"command": f"WRITE_FILE {path}", "stdout": "", "stderr": str(e), "returncode": 1}
         try:
             path, content = args.split('\n', 1)
             path = path.strip()
@@ -90,18 +171,20 @@ def execute_command(full_command: str) -> Dict[str, Any]:
         except ValueError:
             return {"command": f"WRITE_FILE {args}", "stdout": "", "stderr": "Invalid WRITE_FILE format. Missing path or content.", "returncode": 1}
     elif command_type == "LIST_FILES":
+        if ssh_creds:
+            return _execute_ssh(f"ls -F {args if args else '.'}", ssh_creds)
         return _list_files(args if args else ".")
     else:
         # Default to executing as a shell command for backward compatibility
         return _execute_shell(full_command)
 
-def execute_commands(commands: List[str]) -> List[Dict[str, Any]]:
+def execute_commands(commands: List[str], ssh_creds: Dict[str, Any] = None) -> List[Dict[str, Any]]:
     """
     Executes a list of commands. This is kept for the standard (non-programmer) mode.
     """
     results = []
     for command in commands:
-        results.append(execute_command(command))
+        results.append(execute_command(command, ssh_creds))
     return results
 
 if __name__ == '__main__':
